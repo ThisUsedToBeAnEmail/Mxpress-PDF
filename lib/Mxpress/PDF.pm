@@ -3,16 +3,16 @@ use strict;
 use warnings;
 
 package Mxpress::PDF {
-	our $VERSION = '0.05';
+	our $VERSION = '0.09';
 	use Zydeco (
-		version	=> '0.05',
+		version	=> '0.09',
 		authority => 'cpan:LNATION',
 	);
 	use Colouring::In;
 	use constant mm => 25.4 / 72;
 	use constant pt => 1;
 	class File (HashRef $args) {
-		my @plugins = (qw/font line box circle pie ellipse text title subtitle subsubtitle toc image/, ($args->{plugins} ? @{$args->{plugins}} : ()));
+		my @plugins = (qw/font line box circle pie ellipse text title subtitle subsubtitle toc image form field annotation/, ($args->{plugins} ? @{$args->{plugins}} : ()));
 		for my $p (@plugins) {
 			my $meth = sprintf('_store_%s', $p);
 			has {$meth} (type => Object);
@@ -210,7 +210,7 @@ package Mxpress::PDF {
 				$self->current->set_position(
 					($self->x > 100 ? ($self->x - $p) : ($self->x + $p)),
 					($self->y > 100 ? ($self->y - $p) : ($self->y + $p)),
-					($self->w - ($p*2)),
+					($self->w - $p),
 					$self->h
 				);
 			}
@@ -293,26 +293,30 @@ package Mxpress::PDF {
 			my $page = $file ? $self->file->page : $self;
 			my $sp = $self->padding/mm;
 			my $pp = $page->padding/mm;
-			$x //= $page->x + $sp;
-			$y //= $page->y - $sp;
-			$w //= $page->w - $sp;
-			$h //= $page->oh - ($page->oh - $y) - ($sp + $pp);
-			$h = (!$page->footer->active ? $h : $h > $page->footer->h ? ($h - $page->footer->h) : ($page->saving ? $h : 0));
-			if ($file && $page->columns > 1 && !$self->full) {
-				$w = ($page->w / $page->columns);
-				$x += ($w * ($page->column - 1));
-				$w -= $pp;
-			}
-			if ($file && $page->rows > 1 && !$self->full) {
-				my $hh = $page->header->active ? $page->header->h :0;
-				my $fh = $page->footer->active ? $page->footer->h : 0;
-				$h = ($page->h + ($pp*2)) / $page->rows;
-				$h -= ((($page->h + ($pp*3)) - $y) - ($h * ($page->row - 1)));
-				$h -= $fh;
-				if ($page->row > 1 && $page->y == $page->row_y) {
-					$y -= $pp;
-					$h -= $pp;
+			$x //= ($page->x + $sp);
+			$y //= ($page->y - $sp);
+			$w //= ($page->w - $sp);
+			$h //= ($page->oh - ($page->oh - $y) - ($sp + $pp));
+			$h = (!$page->footer->active ? $h : $page->footer->saving ? ($h + $sp + $pp) : $h > $page->footer->h ? ($h - $page->footer->h) :  0);
+			if ($file) {
+				if ($page->columns > 1 && !$self->full) {
+					$w = ($page->w / $page->columns);
+					$x += ($w * ($page->column - 1));
+					$w -= $sp;
 				}
+				$w -= ($pp + $sp);
+				if ($page->rows > 1 && !$self->full) {
+					my $hh = $page->header->active ? $page->header->h :0;
+					my $fh = $page->footer->active ? $page->footer->h : 0;
+					$h = ($page->h + ($pp*2)) / $page->rows;
+					$h -= ((($page->h + ($pp*3)) - $y) - ($h * ($page->row - 1)));
+					$h -= $fh;
+					if ($page->row > 1 && $page->y == $page->row_y) {
+						$y -= $pp;
+						$h -= $pp;
+					}
+				}
+				$h -= $sp;
 			}
 			return $xy ? ($x, $y) : ($x, $y, $w, $h);
 		}
@@ -473,6 +477,7 @@ package Mxpress::PDF {
 			}
 		}
 		class +Text {
+			has text (type => Object);
 			has font (type => Object);
 			has paragraph_space (type => Num);
 			has paragraphs_to_columns (type => Bool);
@@ -522,7 +527,7 @@ package Mxpress::PDF {
 					$self->file->page->columns(scalar grep { ($_ =~ m/\w/) } @paragraphs);
 					$page_column = 1;
 				}
-				my $text = $self->file->page->current->text;
+				my $text = $self->text($self->file->page->current->text);
 				$text->font( $self->font->load, $self->font->size/pt );
 				$text->fillcolor( $self->font->colour );
 				my ($total_width, $space_width, %width) = $self->_calculate_widths($string, $text);
@@ -534,8 +539,8 @@ package Mxpress::PDF {
 				my ($fl, $fp, @paragraph) = (1, 1, split ( / /, shift(@paragraphs) || '' ));
 				# while we have enough height to add a new line
 				if ($h >= 0 && $y >= 0) {
-					while ($ypos > ($y - $h)) {
-						unless (@paragraph) {
+					while ($ypos + 0 >= ($y - $h)) {
+						unless (scalar @paragraph) {
 							last unless scalar @paragraphs;
 							@paragraph = split( / /, shift(@paragraphs) );
 							if ($page_column) {
@@ -544,8 +549,8 @@ package Mxpress::PDF {
 								$ypos = $y;
 							}
 							$ypos -= $l;
-							$ypos -= $self->paragraph_space/mm if $self->paragraph_space;
-							last unless $ypos >= $y - $h;
+							$ypos -= ($self->paragraph_space/mm) if $self->paragraph_space;
+							last unless $ypos >= ($y - $h);
 							($fl, $fp) = (1, 0);
 						}
 						my ($xpos, $lw, $line_width, @line) = ($x, $w, 0);
@@ -554,6 +559,7 @@ package Mxpress::PDF {
 							$line_width += $width{$paragraph[0]} || 0;
 							push @line, shift(@paragraph);
 						}
+
 						my ($wordspace, $align);
 						if ($self->align eq 'fulljustify' or $self->align eq 'justify' and @paragraph) {
 							if (scalar(@line) == 1) {
@@ -584,8 +590,7 @@ package Mxpress::PDF {
 						if (@paragraph) {
 							$ypos -= $l if @paragraph;
 						} elsif ($self->pad) {
-							my $pad_end = $self->pad_end;
-							$lw -= $self->page->padding/mm;
+							my $pad_end = $self->pad_end || '';
 							my $pad = sprintf ("%s%s",
 								$self->pad x int(((
 									(((($lw + $wordspace) - $line_width) - $text->advancewidth($self->pad . $pad_end)))
@@ -865,6 +870,74 @@ package Mxpress::PDF {
 				return ($x, $y, $width, $height);
 			}
 		}
+		class +Annotation {
+			has type (type => Str);
+			has w (type => Num);
+			has h (type => Num);
+			has open (type => Bool);
+			has rect (type => ArrayRef);
+			has border (type => ArrayRef);
+			factory annotation (Object $file, Map %args) {
+				return $class->new(
+					file => $file,
+					padding => 0,
+					type => 'text',
+					open => 0,
+					w => 0,
+					h => 0,
+					%args
+				);
+			}
+			method add (Str $text, %args) {
+				my $annotation = $self->file->page->current->annotation;
+				return $self->_add_annotation($self->type, $text, %args);
+			}
+			method _add_annotation (Str $type, Str $cont, Map %args) {
+				$self->set_attrs(%args);
+				my $annotation = $self->file->page->current->annotation;
+				my @xy = $self->parse_position(($self->position || []), 1);
+				$annotation->$type($cont,
+					-rect => $self->rect || [@xy, $self->w, $self->h],
+					-open => $self->open,
+					-border => $self->border || [@xy, $self->w]
+				); # :/
+				return $self->file;
+			}
+		}
+		class +Form {
+			has xo (type => Object);
+			factory form (Object $file, Map %args) {
+				return $class->new(
+					file => $file,
+					forms => [],
+					padding => $args{padding} || 0,
+				);
+			}
+			method add {
+				my $form = $self->xo(
+					$self->file->pdf->xo_form()
+				);
+				$self->position([$self->parse_position([], 1)]);
+				return $self->file;
+			}
+			method end (Map %args) {
+				my $position = $self->position;
+
+				return $self->file;
+			}
+		}
+		class +Field {
+			extends Plugin::Text;
+			factory field (Object $file, Map %args) {
+				$args{pad} ||= '_';
+				$class->generic_new($file, %args);
+				# todo Attempt2 when brain != hangover |--[fillable forms]--|
+			}
+			around add (Str $text, Map %args) {
+				my $file = $self->$next($text, %args);
+				return $file;
+			}
+		}
 	}
 	class Factory {
 		use PDF::API2;
@@ -893,7 +966,7 @@ Mxpress::PDF - PDF
 
 =head1 VERSION
 
-Version 0.05
+Version 0.09
 
 =cut
 
@@ -943,8 +1016,9 @@ This is experimental and may yet still change.
 			margin_bottom => 3
 		},
 		text => {
-			font => { align => 'justify', colour => '#fff' },
-			margin_bottom => 3
+			font => { colour => '#fff' },
+			margin_bottom => 3,
+			align => 'justify'
 		},
 	)->add_page;
 
@@ -974,6 +1048,8 @@ This is experimental and may yet still change.
 			[qw/title subtitle subsubtitle/]->[int(rand(3))] => $gen_text->(4)
 		)->text->add( $gen_text->(1000) );
 	}
+
+	$pdf->save();
 
 =head1 Description
 
@@ -2232,6 +2308,65 @@ Add an image to the current Mxpress::PDF::Page.
 or
 
 	$img->add($image_file_path, %image_attrs)
+
+=head1 Annotation
+
+Mxpress::PDF::Plugin::Annotation extends Mxpress::PDF::Plugin and is for adding annotations to a
+Mxpress::PDF::Page.
+
+You can pass default attributes when instantiating the file object.
+
+	Mxpress::PDF->add_file($filename,
+		annotation => { %annotation_attrs },
+	);
+
+or when calling the objects add method.
+
+	$file->annotation->add(
+		%annotation_attrs
+	);
+
+	my $annotation = $annotation->annotation;
+
+=head2 Attributes
+
+The following attributes can be configured for a Mxpress::PDF::Plugin::Annotation object, they are all optional.
+
+	$annotation->$attrs();
+
+=head3 type (type => Num)
+
+The type of annotation text|file|.
+
+	$annotation->type;
+
+=head3 w (type => Num)
+
+The width of the annotation.
+
+	$annotation->w;
+
+=head3 h (type => Num)
+
+The hieght of the annotation.
+
+	$annotation->h;
+
+=head2 open (type => Bool)
+
+Toggle whether annotation is open.
+
+	$annotation->open;
+
+=head2 Methods
+
+The following methods can be called from a Mxpress::PDF::Plugin::Annotation Object.
+
+=head3 add
+
+Add an annotation to the current Mxpress::PDF::Page.
+
+	$annotation->add('add some text', %annotation_attrs)
 
 =head1 AUTHOR
 

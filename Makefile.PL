@@ -13,6 +13,7 @@ my %WriteMakefileArgs = (
     CONFIGURE_REQUIRES => {
         'ExtUtils::MakeMaker' => '0',
     },
+    EXE_FILES => [ 'mxpdf' ],
     TEST_REQUIRES => {
         'Test::More' => '0',
     },
