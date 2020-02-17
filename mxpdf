@@ -1,10 +1,11 @@
+#!perl
 use strict;
 use warnings;
 use Mxpress::PDF;
 use YAML::XS qw/LoadFile/;
 use feature qw/say/;
 
-my $filename = shift;
+my $filename = shift or die 'no filename passed';
 my $conf = shift;
 my $content = shift;
 
@@ -15,7 +16,20 @@ if ($conf) {
 		page => {
 			background => '#fff',
 			padding => 5
-		}
+		},
+		title => {
+			margin_bottom => 5,
+		},
+		subtitle => {
+			margin_bottom => 5,
+		},
+		subsubtitle => {
+			margin_bottom => 5,
+		},
+		text => {
+			margin_bottom => 5,
+			align => 'justify'
+		},
 	};
 }
 
@@ -44,10 +58,10 @@ my %map = (
 		$_[0]->toc->add(title => $_[1])
 	}],
 	'==' => ['subtitle', sub {
-		$_[0]->toc->add(title => $_[1])
+		$_[0]->toc->add(subtitle => $_[1])
 	}],
 	'===' => ['subsubtitle', sub {
-		$_[0]->toc->add(title => $_[1])
+		$_[0]->toc->add(subsubtitle => $_[1])
 	}],
 	'=i=' => ['image', sub {
 		$_[0]->image->add($_[1])
@@ -86,7 +100,7 @@ if ($content) {
 	while (1) {
 		my $line = <STDIN>;
 		chomp $line;
-		last if $line eq 'last';
+		last if $line eq 'save';
 		$plug->($line);
 	}
 }
@@ -126,5 +140,9 @@ The configuration file should be in yaml format.
 	page:
 	    background: '#f00'
 	    padding: 10	
+
+To exit from the STDIN input - type
+
+	save
 
 =cut

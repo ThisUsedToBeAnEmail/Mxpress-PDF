@@ -3,16 +3,16 @@ use strict;
 use warnings;
 
 package Mxpress::PDF {
-	our $VERSION = '0.09';
+	our $VERSION = '0.11';
 	use Zydeco (
-		version	=> '0.09',
+		version	=> '0.11',
 		authority => 'cpan:LNATION',
 	);
 	use Colouring::In;
 	use constant mm => 25.4 / 72;
 	use constant pt => 1;
 	class File (HashRef $args) {
-		my @plugins = (qw/font line box circle pie ellipse text title subtitle subsubtitle toc image form field annotation/, ($args->{plugins} ? @{$args->{plugins}} : ()));
+		my @plugins = (qw/font line box circle pie ellipse text title subtitle subsubtitle toc image form field annotation cover/, ($args->{plugins} ? @{$args->{plugins}} : ()));
 		for my $p (@plugins) {
 			my $meth = sprintf('_store_%s', $p);
 			has {$meth} (type => Object);
@@ -35,8 +35,10 @@ package Mxpress::PDF {
 		method add_page (Map %args) {
 			$args{is_rotated} = 0;
 			if ($self->page) {
-				$self->page->next_column() && return;
-				$self->page->next_row() && return;
+				unless ($args{force_new_page}) {
+					$self->page->next_column() && return;
+					$self->page->next_row() && return;
+				}
 				$args{h_offset} = $self->page->h_offset;
 				$args{is_rotated} = $self->page->is_rotated;
 				$args{columns} = $self->page->columns;
@@ -49,7 +51,6 @@ package Mxpress::PDF {
 				($self->page ? (
 					num => $self->page->num + 1,
 					header => $self->page->header->attrs(@attrs),
-
 					footer => $self->page->footer->attrs(@attrs)
 				) : ()),
 				%args,
@@ -61,13 +62,19 @@ package Mxpress::PDF {
 			$self;
 		}
 		method save {
+			my @pages = @{$self->pages};
+			if ($self->cover->active) {
+				$self->page(shift @pages);
+				$self->page->current($self->pdf->openpage(1));
+				$self->cover->run_onsave_cbs($self);
+			}
 			if ($self->onsave_cbs) {
 				for my $cb (@{$self->onsave_cbs}) {
 					my ($plug, $meth, $args) = @{$cb};
 					$self->$plug->$meth(%{$args});
 				}
 			}
-			for my $page (@{$self->pages}) {
+			for my $page (@pages) {
 				$page->num($page->num + ($self->page_offset || 0));
 				$page->current($self->pdf->openpage($page->num));
 				$self->page($page)->run_onsave_cbs($self);
@@ -104,16 +111,17 @@ package Mxpress::PDF {
 		has w (type => Num);
 		has h (type => Num);
 		has oh (type => Num);
+		has ow (type => Num);
 		has saving (type => Bool);
 		has onsave_cbs (type => ArrayRef);
 		factory page (Object $pdf, Map %args) {
 			my $page = $args{open} ? $pdf->openpage($args{num}) : $pdf->page($args{num} || 0);
 			$page->mediabox($args{page_size});
 			my ($blx, $bly, $trx, $try) = $page->get_mediabox;
-			@args{qw/x y w h oh/} = $args{is_rotated} ? (
-				0, $trx, $try, $trx, $trx
+			@args{qw/x y w h oh ow/} = $args{is_rotated} ? (
+				0, $trx, $try, $trx, $trx, $try
 			) : (
-				0, $try, $trx, $try, $try
+				0, $try, $trx, $try, $try, $trx
 			);
 			$args{num} ||= 1;
 			my $new_page = $class->new(
@@ -128,7 +136,7 @@ package Mxpress::PDF {
 			);
 			for (qw/header footer/) {
 				$new_page->$_($factory->$_(
-					current => $new_page,
+					parent => $new_page,
 					%{$args{$_}}
 				));
 			}
@@ -166,7 +174,7 @@ package Mxpress::PDF {
 		method next_column {
 			if ($self->column < $self->columns) {
 				my $fh = !!$self->footer->active ? $self->footer->h : 0;
-				$self->y($self->row_y ? $self->row_y : ($self->h + (($self->padding*2)/mm + $fh)));
+				$self->y($self->row_y ? $self->row_y : ($self->h + (($self->padding*2)/mm) + $fh));
 				$self->column($self->column + 1);
 				return 1;
 			}
@@ -190,7 +198,11 @@ package Mxpress::PDF {
 				map +($_ => $self->$_), grep { defined $self->$_ } @attrs
 			}
 		}
+		method hf_offset {
+			return ($self->header->active ? $self->header->h : 0 ) + ($self->footer->active ? $self->footer->h : 0);
+		}
 		class +Component {
+			has parent (type => Object);
 			has show_page_num (type => Str);
 			has page_num_text (type => Str);
 			has active (type => Bool);
@@ -201,13 +213,13 @@ package Mxpress::PDF {
 				$self->set_attrs(%args);
 				if (!$self->active) {
 					$self->activate();
-					$self->current->h_offset($self->current->h_offset + $self->h);
+				#	$self->parent->h_offset($self->parent->h_offset + $self->h);
 				}
-				return $self->current;
+				return $self->parent;
 			}
 			method set_position () {
 				my $p = $self->padding/mm;
-				$self->current->set_position(
+				$self->parent->set_position(
 					($self->x > 100 ? ($self->x - $p) : ($self->x + $p)),
 					($self->y > 100 ? ($self->y - $p) : ($self->y + $p)),
 					($self->w - $p),
@@ -219,51 +231,72 @@ package Mxpress::PDF {
 					(my $text = $self->page_num_text) =~ s/\{(.*)\}/$self->$1/eg;
 					return $text;
 				}
-				return $self->current->num;
+				return $self->parent->num;
 			}
-			before run_onsave_cbs (Object $file) {
+			method activate () {
+				$self->active(\1);
+				return $self;
+			}
+			around run_onsave_cbs (Object $file) {
 				$self->set_position();
 				$file->page->padding($self->padding);
 				$file->page->column($self->column || 1);
 				$file->page->columns($self->columns || 1);
 				$file->page->row($self->row || 1);
 				$file->page->rows($self->rows || 1);
-			}
-			after run_onsave_cbs (Object $file) {
+				$self->$next($file);
 				if ($self->show_page_num) {
 					$self->set_position();
 					$file->text->add($self->process_page_num_text, align => $self->show_page_num);
 				}
 			}
+			class +Cover {
+				has file (type => Object);
+				factory cover (Object $file, Map %args) {
+					$args{$_} //= $file->page->$_ for qw/x y w h padding oh ow column columns row rows num page_size/;
+					return $class->new(
+						file => $file,
+						parent => $file->page,
+						current => $file->page->current,
+						%args
+					);
+				}
+				method end {
+					$self->file->page($self->parent);
+					$self->file->add_page(force_new_page => 1);
+					return $self->file;
+				}
+				around add {
+					$self->file->page($self);
+					$self->$next(@_);
+					return $self->file;
+				}
+			}
 			class +Header {
 				factory header (Map %args) {
-					$args{$_} //= $args{current}->$_ for qw/x w num page_size/;
-					$args{y} //= $args{current}->h;
+					$args{$_} //= $args{parent}->$_ for qw/num page_size/;
+					$args{x} //= 0;
+					$args{w} //= $args{parent}->ow;
+					$args{y} //= $args{parent}->h;
 					$args{h} //= 10/mm;
 					$args{padding} //= 0;
 					my $head = $class->new(onsave_cbs => [], %args);
 					$head->activate if !!$head->active;
 					return $head;
 				}
-				method activate {
-					$self->current->y($self->current->y - $self->h);
-					$self->active(\1);
-					return $self;
+				before activate {
+					$self->parent->y($self->parent->y - $self->h);
 				}
 			}
 			class +Footer {
 				factory footer (Map %args) {
-					$args{$_} //= $args{current}->$_ for qw/x w num page_size/;
+					$args{$_} //= $args{parent}->$_ for qw/num page_size/;
+					$args{x} //= 0;
+					$args{w} //= $args{parent}->ow;
 					$args{y} //= (5/mm);
 					$args{h} //= (10/mm);
 					$args{padding} //= 0;
-					my $foot = $class->new(onsave_cbs => [], %args);
-					$foot->activate if !!$foot->active;
-					return $foot;
-				}
-				method activate () {
-					$self->active(\1);
-					return $self;
+					return $class->new(onsave_cbs => [], %args);
 				}
 			}
 		}
@@ -297,7 +330,7 @@ package Mxpress::PDF {
 			$y //= ($page->y - $sp);
 			$w //= ($page->w - $sp);
 			$h //= ($page->oh - ($page->oh - $y) - ($sp + $pp));
-			$h = (!$page->footer->active ? $h : $page->footer->saving ? ($h + $sp + $pp) : $h > $page->footer->h ? ($h - $page->footer->h) :  0);
+			$h = ((!$page->footer || !$page->footer->active) ? $h : $page->footer->saving ? ($h + $sp + $pp) : $h > $page->footer->h ? ($h - $page->footer->h) : 0);
 			if ($file) {
 				if ($page->columns > 1 && !$self->full) {
 					$w = ($page->w / $page->columns);
@@ -306,8 +339,8 @@ package Mxpress::PDF {
 				}
 				$w -= ($pp + $sp);
 				if ($page->rows > 1 && !$self->full) {
-					my $hh = $page->header->active ? $page->header->h :0;
-					my $fh = $page->footer->active ? $page->footer->h : 0;
+					my $hh = $page->header && $page->header->active ? $page->header->h :0;
+					my $fh = $page->footer && $page->footer->active ? $page->footer->h : 0;
 					$h = ($page->h + ($pp*2)) / $page->rows;
 					$h -= ((($page->h + ($pp*3)) - $y) - ($h * ($page->row - 1)));
 					$h -= $fh;
@@ -694,7 +727,7 @@ package Mxpress::PDF {
 					next_page => $args{next_page} || do { method {
 						my $self = shift;
 						$file->add_page(open => 1);
-						$file->page->set_position($file->toc->parse_position([]));
+						#$file->page->set_position($file->toc->parse_position([]));
 						return $file->page;
 					} },
 					padding => $args{padding} || 0,
@@ -745,10 +778,10 @@ package Mxpress::PDF {
 				#$self->file->subtitle->add($args{title} ? @{$args{title}} : 'Table of contents');
 				$self->toc_placeholder({
 					page => $self->file->page,
-					position => [$self->parse_position($args{position} || [])]
+					position => [$self->file->page->parse_position($args{position} || [])]
 				});
 				$self->file->onsave('toc', 'render', %args);
-				$self->file->add_page;
+				$self->file->add_page(force_new_page => 1);
 				return $self->file;
 			}
 			method add (Map %args) {
@@ -786,13 +819,14 @@ package Mxpress::PDF {
 				# todo better
 				$args{page_offset} = 0;
 				my $one_toc_link = $self->outlines->[0]->font->size + $self->toc_line_offset/mm;
-				my $total_height = ($self->count * $one_toc_link) - $h;
+				my $total_height = ($self->count * $one_toc_link) - ($h + ($self->file->page->h * $self->file->page->columns - 1));
 				while ($total_height > 0) {
 					$args{page_offset}++;
 					$self->file->add_page(num => $placeholder->{page}->num + $args{page_offset});
 					$total_height -= $self->file->page->h;
 				}
 				$self->file->page($placeholder->{page});
+				$self->file->page->h($self->file->page->h - $self->file->page->hf_offset);
 				for my $outline (@{$self->outlines}) {
 					$outline->render(%args);
 				}
@@ -949,7 +983,7 @@ package Mxpress::PDF {
 				page_size => 'A4',
 				page_args => $args{page} || {},
 				pdf => PDF::API2->new( -file => sprintf("%s.pdf", $name)),
-			);
+			)->add_page;
 		}
 	}
 }
@@ -966,7 +1000,7 @@ Mxpress::PDF - PDF
 
 =head1 VERSION
 
-Version 0.09
+Version 0.11
 
 =cut
 
@@ -993,6 +1027,10 @@ This is experimental and may yet still change.
 		page => {
 			background => '#000',
 			padding => 15,
+			columns => 3,
+		},
+		cover => {
+			columns => 1
 		},
 		toc => {
 			font => { colour => '#00f' },
@@ -1020,7 +1058,19 @@ This is experimental and may yet still change.
 			margin_bottom => 3,
 			align => 'justify'
 		},
-	)->add_page;
+	);
+
+	$pdf->cover->add->title->add(
+		'Add a cover page'
+	)->image->add(
+		't/hand-cross.png'
+	)->cover->add(
+		cb => ['text', 'add', q|you're welcome|]
+	);
+
+	$pdf->title->add(
+		'Table Of Contents'
+	)->toc->placeholder;
 
 	$pdf->page->header->add(
 		show_page_num => 'right',
@@ -1036,12 +1086,6 @@ This is experimental and may yet still change.
 		h => $pdf->mmp(10),
 		padding => 5
 	);
-
-	$pdf->title->add(
-		$gen_text->(5)
-	)->toc->placeholder;
-
-	$pdf->page->columns(2);
 
 	for (0 .. 100) {
 		$pdf->toc->add(
@@ -1072,6 +1116,12 @@ Returns a new Mxpress::PDF::File object. This is the MAIN object for working on 
 Returns a new Mxpress::PDF::Page Object. This object is for managing an individual PDF page.
 
 	my $page = Mxpress::PDF->page(%page_args);
+
+=head2 cover
+
+Returns a new Mxpress::PDF::Page::Component::Cover Object. This object is for managing the PDF cover page.
+
+	my $cover = Mxpress::PDF->cover(%cover_args);
 
 =head2 header
 
@@ -1162,6 +1212,12 @@ Returns a new Mxpress::PDF::Plugin::TOC::Outline Object. This object is for mana
 Returns a new Mxpress::PDF::Plugin::Image Object. This object aids with adding images to a pdf page.
 
 	my $image = Mxpress::PDF->image($file, %image_args);
+
+=head2 annotation
+
+Returns a new Mxpress::PDF::Plugin::Annotation Object. This object aids with adding annotations to a pdf page.
+
+	my $annotation = Mxpress::PDF->annotation($file, %image_args);
 
 =head1 File
 
@@ -1491,9 +1547,90 @@ Return attributes for the page.
 
 	my $attrs = $page->attrs(@attrs);
 
+=head1 Component
+
+
+=head1 Cover
+
+Mxpress::PDF::Page::Component::Cover extends Mxpress::PDF::Page::Component and is for managing an the PDF cover page.
+
+You can pass default attributes when instantiating the page object.
+
+	$file->add_page(
+		cover => { %cover_atts }
+	);
+
+or when calling the objects add method.
+
+	$page->cover->add(
+		%cover_attrs
+	);
+
+=head2 Attributes
+
+The following additional attributes can be configured for a Mxpress::PDF::Page::Component::Cover, they are all optional.
+
+	$page->cover->$attr
+
+=head3 show_page_num (type => Str);
+
+Alignment for the page number
+
+	show_page_num => 'right'
+
+=head3 page_num_text (type => Str);
+
+Text to display around the page number.
+
+	page_num_text => 'Page {num}'
+
+=head3 active (type => Bool);
+
+Control whether to display the cover, default is false however it is set to true if ->cover->add() is called.
+
+	active => true
+
+=head2 Methods
+
+The following methods can be called from a Mxpress::PDF::Page::Component Object.
+
+=head3 add
+
+Add content to the cover. You can pass any attribute for the header along with a cb function which will be added to
+the onsave_cbs.
+
+	$page->coverr->add(
+		cb => [...],
+		%cover_atts
+	);
+
+=head3 set_position
+
+Set the position of the header.
+
+	$page->header->position($x, $y, $w, $h);
+
+=head3 process_page_num_text
+
+Process the page_num_text into printable form.
+
+	$self->header->processs_page_num_text();
+
+=head3 activate
+
+Activate the header.
+
+	$page->activate()
+
+=head3 end
+
+Move to page 2.
+
+	$page->end;
+
 =head1 Header
 
-Mxpress::PDF::Page::Component::Header extends Mxpress::PDF::Page and is for managing an individual PDF page header.
+Mxpress::PDF::Page::Component::Header extends Mxpress::PDF::Page::Component and is for managing an individual PDF page header.
 
 You can pass default attributes when instantiating the page object.
 
@@ -1527,7 +1664,7 @@ Text to display around the page number.
 
 =head3 active (type => Bool);
 
-Control whether to display the header, defalt is false however it is set to true if ->header->add() is called.
+Control whether to display the header, default is false however it is set to true if ->header->add() is called.
 
 	active => true
 

@@ -14,7 +14,14 @@ my $gen_text = sub { join( ' ', map { $data[int(rand(scalar @data))] } 0 .. int(
 my $pdf = Mxpress::PDF->new_pdf('test',
 	page => {
 		background => '#000',
-		padding => 10
+		padding => 10,
+		columns => 2,
+		rows => 2,
+	},
+	cover => {
+		rows => 1,
+		columns => 1,
+		padding => 10,
 	},
 	toc => {
 		font => { colour => '#00f' },
@@ -23,26 +30,34 @@ my $pdf = Mxpress::PDF->new_pdf('test',
 		font => { 
 			colour => '#f00',
 		},
-		margin_bottom => 5,
 	},
 	subtitle => {
 		font => { 
 			colour => '#0ff', 
 		},
-		margin_bottom => 5,
 	},
 	subsubtitle => {
 		font => { 
 			colour => '#f0f',
 		},
-		margin_bottom => 5,
 	},
 	text => {
 		font => { align => 'justify', colour => '#fff' },
-		margin_bottom => 5,
 		align => 'justify'
 	},
-)->add_page;
+);
+
+$pdf->cover->add->title->add(
+	'Add a cover page'
+)->image->add(
+	't/hand-cross.png'
+)->cover->add(
+	cb => ['text', 'add', q|you're welcome|]
+);
+
+#->cover->add(
+#	cb => ['text', 'add', q|You're welcome|, %title_args]
+$pdf->cover->end;
 
 $pdf->page->header->add(
 	show_page_num => 'right',
@@ -63,8 +78,6 @@ $pdf->title->add(
 	$gen_text->(5)
 )->toc->placeholder;
 
-$pdf->add_page;
-$pdf->page->columns(2);
 $pdf->page->rows(2);
 
 for (0 .. 100) {
