@@ -33,7 +33,7 @@ if ($conf) {
 	};
 }
 
-my $file = Mxpress::PDF->new_pdf($filename, $conf)->add_page;
+my $file = Mxpress::PDF->new_pdf($filename, $conf);
 
 $file->page->header->add(
 	show_page_num => 'left',
